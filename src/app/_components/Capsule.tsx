@@ -301,10 +301,6 @@ export default function Capsule() {
           </Panel>
         </div>
 
-        <footer className="pb-4 text-[12px] leading-relaxed text-muted-foreground">
-          Source: the GDELT Project&rsquo;s index of online news. Capsule reads English-language headlines and counts the countries
-          they name (and their peoples and main cities). It counts coverage, not people: a country appears here because it is in the news.
-        </footer>
       </main>
     </div>
   );

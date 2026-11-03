@@ -9,12 +9,3 @@ export function timeAgo(iso: string, now = Date.now()): string {
   const d = Math.round(h / 24);
   return `${d} d ago`;
 }
-
-export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
-
-/** A stable hue for a publisher, so each one keeps its own colour. */
-export function hueFor(text: string): number {
-  let h = 0;
-  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) % 360;
-  return h;
-}

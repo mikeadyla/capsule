@@ -1,42 +1,41 @@
 @import "tailwindcss";
 
+/* The Refugee Data Portal's clean system, with Flordanis plum in place of UNHCR blue (as in Flordanis OS). */
 @theme inline {
-  --font-sans: var(--font-body-var), "Source Sans 3", system-ui, sans-serif;
+  --font-sans: var(--font-body-var), "Proxima Nova", system-ui, sans-serif;
   --font-heading: var(--font-heading-var), "Playfair Display", Georgia, serif;
-  --color-cream: #FDF8F3;
-  --color-cream-dark: #F3EDE6;
-  --color-plum: #5C3044;
-  --color-plum-light: #8B5E6B;
-  --color-rose: #D4A896;
-  --color-sage: #8FB48A;
-  --color-charcoal: #2D2A26;
 }
 
-html, body {
-  height: 100%;
-  margin: 0;
+@theme {
+  --color-background: #FAFBFC;
+  --color-foreground: #14283C;
+  --color-card: #FFFFFF;
+  --color-muted: #F1F3F6;
+  --color-muted-foreground: #5B6B7C;
+  --color-border: #E1E6EC;
+  --color-input: #C9D2DC;
+  --color-primary: #5C3044;
+  --color-primary-soft: #F6EFF2;
+  --color-ring: #00735F;
+  --color-teal: #00B398;
+  --color-teal-deep: #00735F;
+  --color-gold-soft: #FBF1D0;
+  --color-gold-ink: #765600;
+  --color-land: #E9EDF1;
+
+  --spacing-header: 52px;
 }
 
-body {
-  background: var(--color-cream);
-  color: var(--color-charcoal);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-}
-
-h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-heading);
-}
-
-/* Soft ring that grows from each hotspot. */
-@keyframes capsule-pulse {
-  0% { transform: scale(1); opacity: 0.55; }
-  80%, 100% { transform: scale(2.6); opacity: 0; }
-}
-.capsule-pulse {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: capsule-pulse 2.8s ease-out infinite;
+@layer base {
+  * { border-color: var(--color-border); }
+  html, body { margin: 0; }
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--color-gold-soft); }
 }
 
 @keyframes capsule-shimmer {
@@ -44,21 +43,10 @@ h1, h2, h3, h4, h5, h6 {
   to { background-position: -200% 0; }
 }
 .capsule-skeleton {
-  background: linear-gradient(100deg, #F3EDE6 30%, #FBF7F2 50%, #F3EDE6 70%);
+  background: linear-gradient(100deg, #F1F3F6 30%, #F8F9FB 50%, #F1F3F6 70%);
   background-size: 200% 100%;
   animation: capsule-shimmer 1.6s linear infinite;
 }
-
-@keyframes capsule-live {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(95, 158, 110, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(95, 158, 110, 0); }
-}
-.capsule-live-dot { animation: capsule-live 2s ease-in-out infinite; }
-
 @media (prefers-reduced-motion: reduce) {
-  .capsule-pulse, .capsule-skeleton, .capsule-live-dot { animation: none; }
-  .capsule-pulse { display: none; }
+  .capsule-skeleton { animation: none; }
 }
-
-/* Thin, warm scrollbars. */
-.capsule-scroll { scrollbar-width: thin; scrollbar-color: rgba(212, 168, 150, 0.5) transparent; }

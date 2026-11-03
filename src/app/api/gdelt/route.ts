@@ -1,91 +1,160 @@
-import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { mentionedCountries } from "@/lib/gazetteer";
+import type { Article, CountryCount, Feed, Range } from "@/lib/types";
 
 const GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc";
+// OR needs its parentheses, or GDELT answers with plain text instead of JSON.
+const QUERY = "(refugee OR refugees OR asylum OR UNHCR OR displaced OR displacement) sourcelang:english";
+const TIMESPAN: Record<Range, string> = { "24h": "24h", "7d": "7d", "30d": "1m" };
 
-export async function GET() {
-  const query = "UNHCR OR refugee OR refugees OR asylum";
+const TTL_MS = 15 * 60 * 1000;
+/** GDELT asks for one request every five seconds. */
+const MIN_GAP_MS = 5200;
+
+/** After a failure, GDELT is left alone for this long and visitors get the last rows (or the sample) at once. */
+const RETRY_AFTER_MS = 60 * 1000;
+
+const cache = new Map<Range, { at: number; feed: Feed }>();
+const failedAt = new Map<Range, number>();
+const inflight = new Map<Range, Promise<Feed>>();
+let queue: Promise<unknown> = Promise.resolve();
+let lastCall = 0;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Runs requests to GDELT one at a time, spaced out. */
+function spaced<T>(job: () => Promise<T>): Promise<T> {
+  const run = queue.then(async () => {
+    const wait = lastCall + MIN_GAP_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastCall = Date.now();
+    return job();
+  });
+  queue = run.catch(() => undefined);
+  return run;
+}
+
+/** "20261103T111500Z" -> ISO 8601. */
+function parseSeen(s: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(s);
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z` : new Date().toISOString();
+}
+
+interface GdeltArticle {
+  url?: string;
+  title?: string;
+  seendate?: string;
+  socialimage?: string;
+  domain?: string;
+}
+
+function build(range: Range, raw: GdeltArticle[], live: boolean): Feed {
+  const seen = new Set<string>();
+  const articles: Article[] = [];
+  for (const a of raw) {
+    const title = a.title?.trim();
+    if (!title || !a.url) continue;
+    const key = title.toLowerCase();
+    if (seen.has(key)) continue; // syndicated copies
+    seen.add(key);
+    articles.push({
+      title,
+      url: a.url,
+      domain: (a.domain ?? new URL(a.url).hostname).replace(/^www\./, ""),
+      date: parseSeen(a.seendate ?? ""),
+      image: a.socialimage?.startsWith("https://") ? a.socialimage : null,
+      countries: mentionedCountries(title),
+    });
+  }
+  articles.sort((x, y) => y.date.localeCompare(x.date));
+
+  const tally = new Map<string, number>();
+  for (const a of articles) for (const c of a.countries) tally.set(c, (tally.get(c) ?? 0) + 1);
+  const countries: CountryCount[] = [...tally]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return { range, live, stale: false, fetchedAt: new Date().toISOString(), articles, countries };
+}
+
+async function fetchFeed(range: Range): Promise<Feed> {
   const params = new URLSearchParams({
-    query,
+    query: QUERY,
     mode: "ArtList",
     maxrecords: "250",
     format: "json",
-    timespan: "7d",
+    timespan: TIMESPAN[range],
     sort: "DateDesc",
   });
-
-  try {
-    const res = await fetch(`${GDELT_DOC_API}?${params}`, {
-      next: { revalidate: 900 },
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const articles: Array<{
-        title: string;
-        url: string;
-        source: string;
-        sourcecountry: string;
-        seendate: string;
-      }> = data.articles ?? [];
-
-      const countryMap: Record<string, number> = {};
-      for (const a of articles) {
-        const cc = a.sourcecountry?.toUpperCase();
-        if (cc) countryMap[cc] = (countryMap[cc] ?? 0) + 1;
-      }
-
-      const countries = Object.entries(countryMap)
-        .map(([code, count]) => ({ code, count }))
-        .sort((a, b) => b.count - a.count);
-
-      return NextResponse.json({
-        total: articles.length,
-        countries,
-        topArticles: articles.slice(0, 20).map((a) => ({
-          title: a.title,
-          url: a.url,
-          source: a.source,
-          country: a.sourcecountry,
-          date: a.seendate,
-        })),
-        live: true,
-      });
-    }
-  } catch {
-    // fall through to sample data
-  }
-
-  return NextResponse.json(SAMPLE_DATA);
+  const res = await spaced(() => fetch(`${GDELT_DOC_API}?${params}`, { cache: "no-store", signal: AbortSignal.timeout(25_000) }));
+  if (!res.ok) throw new Error(`GDELT ${res.status}`);
+  const data = JSON.parse(await res.text()) as { articles?: GdeltArticle[] }; // throws on its plain-text errors
+  return build(range, data.articles ?? [], true);
 }
 
-const SAMPLE_DATA = {
-  total: 142,
-  live: false,
-  countries: [
-    { code: "US", count: 28 }, { code: "UK", count: 19 },
-    { code: "GM", count: 12 }, { code: "FR", count: 10 },
-    { code: "TU", count: 9 },  { code: "GR", count: 8 },
-    { code: "IT", count: 7 },  { code: "LE", count: 7 },
-    { code: "JO", count: 6 },  { code: "KE", count: 6 },
-    { code: "EG", count: 5 },  { code: "AU", count: 5 },
-    { code: "CA", count: 4 },  { code: "IN", count: 4 },
-    { code: "PK", count: 3 },  { code: "BG", count: 3 },
-    { code: "SY", count: 2 },  { code: "AF", count: 2 },
-    { code: "ET", count: 2 },  { code: "UG", count: 2 },
-    { code: "SU", count: 2 },  { code: "OD", count: 1 },
-    { code: "CO", count: 1 },  { code: "BR", count: 1 },
-    { code: "MY", count: 1 },  { code: "IR", count: 1 },
-  ],
-  topArticles: [
-    { title: "UNHCR warns of growing displacement crisis in East Africa", url: "#", source: "Reuters", country: "UK", date: "2026-11-01" },
-    { title: "Refugee resettlement numbers fall to historic low", url: "#", source: "The Guardian", country: "UK", date: "2026-11-01" },
-    { title: "Turkey hosts largest refugee population for tenth year", url: "#", source: "Al Jazeera", country: "QA", date: "2026-10-31" },
-    { title: "EU agrees on new asylum pact implementation timeline", url: "#", source: "Politico", country: "BE", date: "2026-10-31" },
-    { title: "Lebanon crisis deepens as Syrian refugees face new pressures", url: "#", source: "AP News", country: "US", date: "2026-10-31" },
-    { title: "Germany debates integration policy overhaul", url: "#", source: "DW", country: "GM", date: "2026-10-30" },
-    { title: "Rohingya refugees in Bangladesh camps face flooding", url: "#", source: "BBC", country: "UK", date: "2026-10-30" },
-    { title: "Kenya's Dadaab camp marks 35 years of operation", url: "#", source: "Nation Africa", country: "KE", date: "2026-10-30" },
-    { title: "US admits fewer refugees than annual cap allows", url: "#", source: "NPR", country: "US", date: "2026-10-29" },
-    { title: "UNHCR calls for $1.2B emergency funding for Sudan crisis", url: "#", source: "France24", country: "FR", date: "2026-10-29" },
-  ],
-};
+async function load(range: Range): Promise<Feed> {
+  const hit = cache.get(range);
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.feed;
+
+  const failed = failedAt.get(range);
+  if (failed && Date.now() - failed < RETRY_AFTER_MS) return hit ? { ...hit.feed, stale: true } : sample(range);
+
+  let pending = inflight.get(range);
+  if (!pending) {
+    pending = fetchFeed(range)
+      .then((feed) => {
+        failedAt.delete(range);
+        cache.set(range, { at: Date.now(), feed });
+        return feed;
+      })
+      .finally(() => inflight.delete(range));
+    inflight.set(range, pending);
+  }
+
+  try {
+    return await pending;
+  } catch {
+    failedAt.set(range, Date.now());
+    // The live feed is unreachable or rate limited: keep showing the last rows we had, marked as such.
+    if (hit) return { ...hit.feed, stale: true };
+    return sample(range);
+  }
+}
+
+export async function GET(request: NextRequest) {
+  const asked = request.nextUrl.searchParams.get("range");
+  const range: Range = asked === "24h" || asked === "30d" ? asked : "7d";
+  return Response.json(await load(range), { headers: { "Cache-Control": "no-store" } });
+}
+
+/** Shown only when GDELT has never answered since the server started; the page says so. */
+function sample(range: Range): Feed {
+  const now = Date.now();
+  const rows: GdeltArticle[] = SAMPLE.map(([title, domain], i) => ({
+    title,
+    url: `https://${domain}/sample-${i}`,
+    domain,
+    seendate: new Date(now - i * 3_600_000 * 5).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z"),
+  }));
+  const feed = build(range, rows, false);
+  return { ...feed, live: false };
+}
+
+const SAMPLE: [string, string][] = [
+  ["UNHCR warns of growing displacement crisis in Sudan as fighting nears El Fasher", "reuters.com"],
+  ["Refugee resettlement in the United States falls to a historic low", "theguardian.com"],
+  ["Turkey hosts one of the world's largest refugee populations for a tenth year", "aljazeera.com"],
+  ["EU agrees timeline for new asylum pact as Greece and Italy brace for arrivals", "politico.eu"],
+  ["Lebanon deepens strain as Syrian refugees face new pressures", "apnews.com"],
+  ["Germany debates integration policy overhaul as asylum applications fall", "dw.com"],
+  ["Rohingya refugees in Bangladesh camps face flooding after heavy rain", "bbc.com"],
+  ["Kenya's Dadaab camp marks 35 years of operation", "nation.africa"],
+  ["UNHCR calls for emergency funding as Sudan displacement crosses new threshold", "france24.com"],
+  ["Ukraine refugees in Poland weigh return as winter approaches", "euronews.com"],
+  ["Afghan returnees from Iran and Pakistan strain aid agencies", "reliefweb.int"],
+  ["Venezuelan migrants cross the Darien Gap in smaller numbers", "reuters.com"],
+  ["Haiti violence displaces thousands more families, UN says", "apnews.com"],
+  ["Yemen displacement worsens as funding gaps widen", "unocha.org"],
+  ["Eritrean asylum seekers reach Italy after Libya crossing", "ansa.it"],
+  ["DR Congo: fighting near Goma forces tens of thousands to flee", "bbc.com"],
+];

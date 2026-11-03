@@ -1,207 +1,182 @@
 import { mentionedCountries } from "@/lib/gazetteer";
-import type { Article, CountryCount, Feed, Range } from "@/lib/types";
-
-const GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc";
+import { KINDS, type Article, type CountryCount, type Feed } from "@/lib/types";
 
 /**
- * GDELT returns only a few dozen articles per query, so Capsule asks three narrower questions and
- * merges the answers. OR needs its parentheses, or GDELT replies in plain text instead of JSON.
+ * Capsule's news comes from ReliefWeb, the UN's humanitarian information service. Its public RSS
+ * feeds need no key; each returns the latest 20 updates for a search, so Capsule runs a few searches
+ * and merges them. Every update is tagged by ReliefWeb with the countries it covers.
  */
-const QUERIES = [
-  "(refugee OR refugees) sourcelang:english",
-  "(asylum OR UNHCR) sourcelang:english",
-  "(displaced OR displacement) sourcelang:english",
-];
-/**
- * GDELT matches words anywhere in an article, so it also returns stories that only mention refugees in
- * passing. Capsule keeps a headline only when the headline itself is about displacement.
- */
-const RELEVANT = /refugee|asylum|migra(?:nt|nts|tion)|displac|fle(?:e|es|d|eing)|deport|UNHCR|IOM|resettl|stateless|border|humanitarian|evacuat|exodus|camps?|small boats|crossings?|returnees?|internally displaced|IDPs?|smuggl|trafficking|detention|expel|exiles?/i;
-
-const TIMESPAN: Record<Range, string> = { "24h": "24h", "7d": "7d", "30d": "1m" };
+const SEARCHES = ["refugees", "asylum", "displacement", "internally displaced", "migrants", "returnees"];
+const RSS = "https://reliefweb.int/updates/rss.xml";
+const USER_AGENT = "Mozilla/5.0 (compatible; Capsule/1.0; +https://capsule.flordanis.com)";
 
 /** Fresh for this long; after that the last feed is served at once while a new one is fetched. */
-const TTL_MS = 15 * 60 * 1000;
-/** After a failure, GDELT is left alone for this long. */
+const TTL_MS = 10 * 60 * 1000;
+/** After a failure, ReliefWeb is left alone for this long. */
 const RETRY_AFTER_MS = 60 * 1000;
-/** GDELT asks for one request every five seconds. */
-const MIN_GAP_MS = 6500;
-/** Waits before asking again after a 429. */
-const BACKOFF_MS = [12_000, 30_000];
+/** A polite pause between the searches. */
+const GAP_MS = 1200;
+
 
 interface Store {
-  cache: Map<Range, { at: number; feed: Feed }>;
-  inflight: Map<Range, Promise<Feed>>;
-  failedAt: Map<Range, number>;
-  queue: Promise<unknown>;
-  lastCall: number;
+  cached: { at: number; feed: Feed } | null;
+  inflight: Promise<Feed> | null;
+  failedAt: number | null;
 }
 
 // One store per server process, shared by the route and the start-up warm-up.
-const store: Store = ((globalThis as { __capsule?: Store }).__capsule ??= {
-  cache: new Map(),
-  inflight: new Map(),
-  failedAt: new Map(),
-  queue: Promise.resolve(),
-  lastCall: 0,
-});
+const store: Store = ((globalThis as { __capsuleFeed?: Store }).__capsuleFeed ??= { cached: null, inflight: null, failedAt: null });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Runs requests to GDELT one at a time, spaced out. */
-function spaced<T>(job: () => Promise<T>): Promise<T> {
-  const run = store.queue.then(async () => {
-    const wait = store.lastCall + MIN_GAP_MS - Date.now();
-    if (wait > 0) await sleep(wait);
-    store.lastCall = Date.now();
-    return job();
-  });
-  store.queue = run.catch(() => undefined);
-  return run;
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+function decode(s: string): string {
+  return s
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) =>
+      e[0] === "#" ? String.fromCodePoint(e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)) : ENTITIES[e.toLowerCase()] ?? m,
+    );
 }
 
-/** "20261103T111500Z" -> ISO 8601. */
-function parseSeen(s: string): string {
-  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(s);
-  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z` : new Date().toISOString();
+const tag = (xml: string, name: string) => {
+  const m = new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`).exec(xml);
+  return m ? decode(m[1]).trim() : "";
+};
+
+/** ReliefWeb's country names -> the map's countries (atlas names). */
+function countriesOf(list: string, title: string): string[] {
+  const found = new Set<string>();
+  for (const name of list.split(",").map((s) => s.trim()).filter(Boolean)) {
+    for (const c of mentionedCountries(name)) found.add(c);
+  }
+  if (found.size === 0) for (const c of mentionedCountries(title)) found.add(c);
+  return [...found];
 }
 
-interface GdeltArticle {
-  url?: string;
-  title?: string;
-  seendate?: string;
-  socialimage?: string;
-  domain?: string;
-}
-
-function build(range: Range, raw: GdeltArticle[], live: boolean): Feed {
-  const seen = new Set<string>();
-  const articles: Article[] = [];
-  for (const a of raw) {
-    const title = a.title?.trim();
-    if (!title || !a.url || !RELEVANT.test(title)) continue;
-    const key = title.toLowerCase();
-    if (seen.has(key) || seen.has(a.url)) continue; // syndicated copies and repeats across queries
-    seen.add(key);
-    seen.add(a.url);
-    articles.push({
+function parse(xml: string): Article[] {
+  const items = xml.split("<item>").slice(1).map((chunk) => chunk.split("</item>")[0]);
+  return items.flatMap((item) => {
+    const title = tag(item, "title");
+    const url = tag(item, "link");
+    if (!title || !url) return [];
+    const description = tag(item, "description");
+    const countryList = /class="tag country">\s*Countr(?:y|ies):\s*([^<]+)</.exec(description)?.[1] ?? "";
+    const source = /class="tag source">\s*Sources?:\s*([^<]+)</.exec(description)?.[1]?.trim() || tag(item, "author") || "ReliefWeb";
+    const categories = [...item.matchAll(/<category>([\s\S]*?)<\/category>/g)].map((m) => decode(m[1]).trim());
+    const kind = categories.find((c) => KINDS.includes(c)) ?? null;
+    const image = /<img src="(https:\/\/reliefweb\.int\/[^"]+)"/.exec(description)?.[1] ?? null;
+    const published = Date.parse(tag(item, "pubDate"));
+    return [{
       title,
-      url: a.url,
-      domain: (a.domain ?? new URL(a.url).hostname).replace(/^www\./, ""),
-      date: parseSeen(a.seendate ?? ""),
-      image: a.socialimage?.startsWith("https://") ? a.socialimage : null,
-      countries: mentionedCountries(title),
-    });
-  }
-  articles.sort((x, y) => y.date.localeCompare(x.date));
-
-  const tally = new Map<string, number>();
-  for (const a of articles) for (const c of a.countries) tally.set(c, (tally.get(c) ?? 0) + 1);
-  const countries: CountryCount[] = [...tally]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count);
-
-  return { range, live, stale: false, fetchedAt: new Date().toISOString(), articles, countries };
-}
-
-async function ask(query: string, range: Range): Promise<GdeltArticle[]> {
-  const params = new URLSearchParams({
-    query,
-    mode: "ArtList",
-    maxrecords: "250",
-    format: "json",
-    timespan: TIMESPAN[range],
-    sort: "DateDesc",
+      url,
+      source: decode(source),
+      date: Number.isFinite(published) ? new Date(published).toISOString() : new Date().toISOString(),
+      image,
+      kind,
+      countries: countriesOf(decode(countryList), title),
+    }];
   });
-  let res = await spaced(() => fetch(`${GDELT_DOC_API}?${params}`, { cache: "no-store", signal: AbortSignal.timeout(25_000) }));
-  for (const wait of BACKOFF_MS) {
-    if (res.status !== 429) break;
-    await sleep(wait);
-    res = await spaced(() => fetch(`${GDELT_DOC_API}?${params}`, { cache: "no-store", signal: AbortSignal.timeout(25_000) }));
+}
+
+function build(articles: Article[], live: boolean): Feed {
+  const seen = new Set<string>();
+  const unique = articles.filter((a) => (seen.has(a.url) ? false : (seen.add(a.url), true)));
+  unique.sort((x, y) => y.date.localeCompare(x.date));
+  const tally = new Map<string, number>();
+  for (const a of unique) for (const c of a.countries) tally.set(c, (tally.get(c) ?? 0) + 1);
+  const countries: CountryCount[] = [...tally].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+  return { live, stale: false, fetchedAt: new Date().toISOString(), articles: unique, countries };
+}
+
+async function search(term: string): Promise<Article[]> {
+  const res = await fetch(`${RSS}?search=${encodeURIComponent(term)}`, {
+    cache: "no-store",
+    headers: { "User-Agent": USER_AGENT, Accept: "application/rss+xml, application/xml" },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) throw new Error(`ReliefWeb ${res.status}`);
+  const xml = await res.text();
+  if (!xml.includes("<rss")) throw new Error("ReliefWeb did not send a feed");
+  return parse(xml);
+}
+
+/** Runs every search one after the other; succeeds when at least one answers. */
+async function fetchFeed(): Promise<Feed> {
+  const all: Article[] = [];
+  let answered = 0;
+  for (const [i, term] of SEARCHES.entries()) {
+    if (i) await sleep(GAP_MS);
+    try {
+      all.push(...(await search(term)));
+      answered++;
+    } catch {
+      // one search failing leaves the others
+    }
   }
-  if (!res.ok) throw new Error(`GDELT ${res.status}`);
-  const data = JSON.parse(await res.text()) as { articles?: GdeltArticle[] }; // throws on its plain-text errors
-  return data.articles ?? [];
+  if (!answered) throw new Error("ReliefWeb did not answer");
+  return build(all, true);
 }
 
-/** Asks every query; succeeds when at least one answers. */
-async function fetchFeed(range: Range): Promise<Feed> {
-  const answers = await Promise.allSettled(QUERIES.map((q) => ask(q, range)));
-  const ok = answers.filter((a): a is PromiseFulfilledResult<GdeltArticle[]> => a.status === "fulfilled");
-  if (ok.length === 0) throw new Error("GDELT did not answer");
-  return build(range, ok.flatMap((a) => a.value), true);
+function refresh(): Promise<Feed> {
+  store.inflight ??= fetchFeed()
+    .then((feed) => {
+      store.failedAt = null;
+      store.cached = { at: Date.now(), feed };
+      return feed;
+    })
+    .catch((e) => {
+      store.failedAt = Date.now();
+      throw e;
+    })
+    .finally(() => {
+      store.inflight = null;
+    });
+  return store.inflight;
 }
 
-/** Starts a refresh unless one is running; remembers the result or the failure. */
-function refresh(range: Range): Promise<Feed> {
-  let pending = store.inflight.get(range);
-  if (!pending) {
-    pending = fetchFeed(range)
-      .then((feed) => {
-        store.failedAt.delete(range);
-        store.cache.set(range, { at: Date.now(), feed });
-        return feed;
-      })
-      .catch((e) => {
-        store.failedAt.set(range, Date.now());
-        throw e;
-      })
-      .finally(() => store.inflight.delete(range));
-    store.inflight.set(range, pending);
-  }
-  return pending;
-}
-
-export async function loadFeed(range: Range): Promise<Feed> {
-  const hit = store.cache.get(range);
-  const failed = store.failedAt.get(range);
-  const resting = failed !== undefined && Date.now() - failed < RETRY_AFTER_MS;
-
+export async function loadFeed(): Promise<Feed> {
+  const hit = store.cached;
+  const resting = store.failedAt !== null && Date.now() - store.failedAt < RETRY_AFTER_MS;
   if (hit) {
-    // Serve what we have at once; fetch a newer one behind it when it has gone stale.
-    if (Date.now() - hit.at >= TTL_MS && !resting) refresh(range).catch(() => undefined);
-    return { ...hit.feed, stale: Date.now() - hit.at >= TTL_MS && resting };
+    const old = Date.now() - hit.at >= TTL_MS;
+    if (old && !resting) refresh().catch(() => undefined);
+    return { ...hit.feed, stale: old && resting };
   }
-  if (resting) return sample(range);
+  if (resting) return sample();
   try {
-    return await refresh(range);
+    return await refresh();
   } catch {
-    return sample(range);
+    return sample();
   }
 }
 
-/** Fetches the default period when the server starts, so the first visitor does not wait. */
+/** Fetches the feed when the server starts, so the first visitor does not wait. */
 export function warm() {
-  refresh("7d").catch(() => undefined);
+  refresh().catch(() => undefined);
 }
 
-/** Shown only when GDELT has never answered since the server started; the page says so. */
-function sample(range: Range): Feed {
+/** Shown only when ReliefWeb has never answered since the server started; the page says so. */
+function sample(): Feed {
   const now = Date.now();
-  const rows: GdeltArticle[] = SAMPLE.map(([title, domain], i) => ({
+  const rows: Article[] = SAMPLE.map(([title, source, countries, kind], i) => ({
     title,
-    url: `https://${domain}/sample-${i}`,
-    domain,
-    seendate: new Date(now - i * 3_600_000 * 5).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z"),
+    url: `https://reliefweb.int/sample-${i}`,
+    source,
+    date: new Date(now - i * 3_600_000 * 4).toISOString(),
+    image: null,
+    kind,
+    countries: countriesOf(countries, title),
   }));
-  return { ...build(range, rows, false), live: false };
+  return { ...build(rows, false), live: false };
 }
 
-const SAMPLE: [string, string][] = [
-  ["UNHCR warns of growing displacement crisis in Sudan as fighting nears El Fasher", "reuters.com"],
-  ["Refugee resettlement in the United States falls to a historic low", "theguardian.com"],
-  ["Turkey hosts one of the world's largest refugee populations for a tenth year", "aljazeera.com"],
-  ["EU agrees timeline for new asylum pact as Greece and Italy brace for arrivals", "politico.eu"],
-  ["Lebanon deepens strain as Syrian refugees face new pressures", "apnews.com"],
-  ["Germany debates integration policy overhaul as asylum applications fall", "dw.com"],
-  ["Rohingya refugees in Bangladesh camps face flooding after heavy rain", "bbc.com"],
-  ["Kenya's Dadaab camp marks 35 years of operation", "nation.africa"],
-  ["UNHCR calls for emergency funding as Sudan displacement crosses new threshold", "france24.com"],
-  ["Ukraine refugees in Poland weigh return as winter approaches", "euronews.com"],
-  ["Afghan returnees from Iran and Pakistan strain aid agencies", "reliefweb.int"],
-  ["Venezuelan migrants cross the Darien Gap in smaller numbers", "reuters.com"],
-  ["Haiti violence displaces thousands more families, UN says", "apnews.com"],
-  ["Yemen displacement worsens as funding gaps widen", "unocha.org"],
-  ["Eritrean asylum seekers reach Italy after Libya crossing", "ansa.it"],
-  ["DR Congo: fighting near Goma forces tens of thousands to flee", "bbc.com"],
+const SAMPLE: [string, string, string, string][] = [
+  ["Sudan: Displacement Situation Update", "International Organization for Migration", "Sudan, Chad", "Situation Report"],
+  ["UNHCR Türkiye Monthly Operational Update", "UN High Commissioner for Refugees", "Türkiye, Syrian Arab Republic", "Situation Report"],
+  ["Lebanon: Flash Update on displacement", "UN Office for the Coordination of Humanitarian Affairs", "Lebanon", "Situation Report"],
+  ["Rohingya refugee response: joint response plan", "UN High Commissioner for Refugees", "Bangladesh, Myanmar", "Appeal"],
+  ["Democratic Republic of the Congo: Humanitarian snapshot, North Kivu", "UN Office for the Coordination of Humanitarian Affairs", "Democratic Republic of the Congo", "Infographic"],
+  ["Ukraine: Returnees and internally displaced people, round 20", "International Organization for Migration", "Ukraine", "Assessment"],
+  ["Afghanistan: Returns from Iran and Pakistan", "UN High Commissioner for Refugees", "Afghanistan, Iran (Islamic Republic of), Pakistan", "News and Press Release"],
+  ["Venezuela situation: regional refugee and migrant response", "R4V", "Venezuela (Bolivarian Republic of), Colombia, Peru", "Analysis"],
 ];

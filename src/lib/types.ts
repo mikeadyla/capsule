@@ -1,20 +1,14 @@
-export type Range = '24h' | '7d' | '30d';
-
-export const RANGES: { id: Range; label: string }[] = [
-  { id: '24h', label: '24 hours' },
-  { id: '7d', label: '7 days' },
-  { id: '30d', label: '30 days' },
-];
-
 export interface Article {
   title: string;
   url: string;
-  /** The publisher's website, e.g. bbc.com. */
-  domain: string;
+  /** The organisation that published it, e.g. UN High Commissioner for Refugees. */
+  source: string;
   /** ISO 8601. */
   date: string;
   image: string | null;
-  /** Atlas names of the countries the headline names. */
+  /** ReliefWeb's content type, e.g. Situation Report. */
+  kind: string | null;
+  /** Atlas names of the countries it covers (see lib/gazetteer.ts). */
   countries: string[];
 }
 
@@ -25,12 +19,27 @@ export interface CountryCount {
 }
 
 export interface Feed {
-  range: Range;
-  /** True when the rows came from GDELT (now or earlier); false for the built-in sample. */
+  /** True when the items came from ReliefWeb (now or earlier); false for the built-in sample. */
   live: boolean;
-  /** The live feed could not be reached just now, so these are the last rows we had. */
+  /** ReliefWeb could not be reached just now, so these are the last items we had. */
   stale: boolean;
   fetchedAt: string;
   articles: Article[];
   countries: CountryCount[];
 }
+
+/** ReliefWeb's content types, in the order Capsule lists them. */
+export const KINDS = [
+  "News and Press Release",
+  "Situation Report",
+  "Analysis",
+  "Assessment",
+  "Appeal",
+  "Map",
+  "Infographic",
+  "UN Document",
+  "Evaluation and Lessons Learned",
+  "Manual and Guideline",
+  "Interactive",
+  "Other",
+];

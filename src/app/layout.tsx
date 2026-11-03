@@ -19,7 +19,7 @@ const playfair = Playfair_Display({ variable: "--font-heading-var", subsets: ["l
 
 export const metadata: Metadata = {
   title: "Capsule · Flordanis",
-  description: "Displacement in the news: where English-language headlines about refugees and asylum point, from the GDELT Project.",
+  description: "Displacement in the news: the latest humanitarian updates on refugees, asylum and displacement, from ReliefWeb."
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

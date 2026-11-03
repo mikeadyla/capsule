@@ -1,7 +1,7 @@
 /**
- * Which countries a headline is about. GDELT's article list says where the *publisher* is, which
- * says little about where people are displaced, so the map counts the countries a headline names.
- * Keys are the names used by the map's world atlas (world-atlas, Natural Earth).
+ * Which countries an update is about, as the map's countries. ReliefWeb tags each update with country
+ * names ("Syrian Arab Republic", "Türkiye"); this turns those, or failing them the title's words, into
+ * the names used by the map's world atlas (world-atlas, Natural Earth).
  */
 
 /** Atlas name -> [display name, ...words that name it: the country, its demonym, a few cities]. */
@@ -32,7 +32,7 @@ const COUNTRIES: Record<string, [string, ...string[]]> = {
   Chile: ['Chile', 'Chile', 'Chilean'],
   China: ['China', 'China', 'Chinese', 'Beijing', 'Uyghur', 'Uyghurs'],
   Colombia: ['Colombia', 'Colombia', 'Colombian', 'Colombians'],
-  Congo: ['Republic of the Congo', 'Congo-Brazzaville', 'Brazzaville'],
+  Congo: ['Republic of the Congo', 'Congo-Brazzaville', 'Brazzaville', 'Congo'],
   'Costa Rica': ['Costa Rica', 'Costa Rica', 'Costa Rican'],
   Croatia: ['Croatia', 'Croatia', 'Croatian'],
   Cuba: ['Cuba', 'Cuba', 'Cuban', 'Cubans', 'Havana'],
@@ -76,7 +76,7 @@ const COUNTRIES: Record<string, [string, ...string[]]> = {
   Kosovo: ['Kosovo', 'Kosovo', 'Kosovar'],
   Kuwait: ['Kuwait', 'Kuwait', 'Kuwaiti'],
   Kyrgyzstan: ['Kyrgyzstan', 'Kyrgyzstan', 'Kyrgyz'],
-  Laos: ['Laos', 'Laos', 'Laotian'],
+  Laos: ['Laos', 'Laos', 'Laotian', "Lao People's Democratic Republic"],
   Latvia: ['Latvia', 'Latvia', 'Latvian'],
   Lebanon: ['Lebanon', 'Lebanon', 'Lebanese', 'Beirut'],
   Liberia: ['Liberia', 'Liberia', 'Liberian'],
@@ -99,7 +99,7 @@ const COUNTRIES: Record<string, [string, ...string[]]> = {
   Nicaragua: ['Nicaragua', 'Nicaragua', 'Nicaraguan', 'Nicaraguans'],
   Niger: ['Niger', 'Niger', 'Nigerien', 'Niamey'],
   Nigeria: ['Nigeria', 'Nigeria', 'Nigerian', 'Nigerians', 'Lagos', 'Abuja'],
-  'North Korea': ['North Korea', 'North Korea', 'North Korean', 'Pyongyang'],
+  'North Korea': ['North Korea', 'North Korea', 'North Korean', 'Pyongyang', "Democratic People's Republic of Korea", 'DPRK'],
   Norway: ['Norway', 'Norway', 'Norwegian', 'Oslo'],
   Oman: ['Oman', 'Oman', 'Omani'],
   Pakistan: ['Pakistan', 'Pakistan', 'Pakistani', 'Pakistanis', 'Islamabad', 'Karachi'],
@@ -124,7 +124,7 @@ const COUNTRIES: Record<string, [string, ...string[]]> = {
   Slovenia: ['Slovenia', 'Slovenia', 'Slovenian'],
   Somalia: ['Somalia', 'Somalia', 'Somali', 'Somalis', 'Mogadishu'],
   'South Africa': ['South Africa', 'South Africa', 'South African', 'Pretoria', 'Johannesburg'],
-  'South Korea': ['South Korea', 'South Korea', 'South Korean', 'Seoul'],
+  'South Korea': ['South Korea', 'South Korea', 'South Korean', 'Seoul', 'Republic of Korea'],
   Spain: ['Spain', 'Spain', 'Spanish', 'Madrid', 'Canary Islands'],
   'Sri Lanka': ['Sri Lanka', 'Sri Lanka', 'Sri Lankan'],
   Sudan: ['Sudan', 'Sudan', 'Sudanese', 'Khartoum', 'Darfur', 'El Fasher'],
@@ -148,9 +148,15 @@ const COUNTRIES: Record<string, [string, ...string[]]> = {
   Uruguay: ['Uruguay', 'Uruguay', 'Uruguayan'],
   Uzbekistan: ['Uzbekistan', 'Uzbekistan', 'Uzbek'],
   Venezuela: ['Venezuela', 'Venezuela', 'Venezuelan', 'Venezuelans', 'Caracas'],
-  Vietnam: ['Vietnam', 'Vietnam', 'Vietnamese', 'Hanoi'],
+  Vietnam: ['Vietnam', 'Vietnam', 'Vietnamese', 'Hanoi', 'Viet Nam'],
   Yemen: ['Yemen', 'Yemen', 'Yemeni', 'Yemenis', 'Sanaa', 'Houthi', 'Houthis'],
   Zambia: ['Zambia', 'Zambia', 'Zambian'],
+  eSwatini: ['Eswatini', 'Eswatini', 'Swaziland'],
+  Lesotho: ['Lesotho', 'Lesotho'],
+  Botswana: ['Botswana', 'Botswana'],
+  Namibia: ['Namibia', 'Namibia', 'Namibian'],
+  Bhutan: ['Bhutan', 'Bhutan', 'Bhutanese'],
+  'Western Sahara': ['Western Sahara', 'Western Sahara', 'Sahrawi'],
   Zimbabwe: ['Zimbabwe', 'Zimbabwe', 'Zimbabwean'],
 };
 
@@ -173,6 +179,8 @@ const MATCHERS: [string, RegExp][] = Object.entries(COUNTRIES).map(([atlas, [, .
 const CONTAINS: Record<string, RegExp> = {
   Sudan: /South Sudan(?:ese)?/g,
   Guinea: /(?:Papua New|Equatorial) Guinea/g,
+  Congo: /Democratic Republic of (?:the )?Congo|DR Congo/g,
+  'South Korea': /Democratic People's Republic of Korea/g,
 };
 
 /** The countries (atlas names) a headline names, each once. */

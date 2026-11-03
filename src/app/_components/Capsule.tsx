@@ -7,7 +7,7 @@ import { ArrowUpRight, Search, Star, X } from 'lucide-react';
 import { displayName } from '@/lib/gazetteer';
 import { timeAgo } from '@/lib/format';
 import { byTopic, TOPICS, type Topic } from '@/lib/topics';
-import { RANGES, type Article, type Feed, type Range } from '@/lib/types';
+import { KINDS, type Article, type Feed } from '@/lib/types';
 import { Panel, SelectPill, Swatch } from './ui';
 import { NONE, STEPS } from './CapsuleMap';
 
@@ -40,14 +40,14 @@ function writeStore(key: string, value: unknown) {
 function Status({ feed, loading }: { feed: Feed | null; loading: boolean }) {
   if (!feed) return <span className="text-[13px] text-muted-foreground">{loading ? 'Loading the news feed…' : ''}</span>;
   if (!feed.live) {
-    return <span className="rounded-md bg-gold-soft px-2 py-1 text-[12px] font-bold text-gold-ink" title="GDELT did not answer, so these are built-in examples.">Sample data · live feed unavailable</span>;
+    return <span className="rounded-md bg-gold-soft px-2 py-1 text-[12px] font-bold text-gold-ink" title="ReliefWeb did not answer, so these are built-in examples.">Sample data · live feed unavailable</span>;
   }
   if (feed.stale) {
-    return <span className="rounded-md bg-gold-soft px-2 py-1 text-[12px] font-bold text-gold-ink" title="GDELT is busy; these are the last headlines we had.">Last updated {timeAgo(feed.fetchedAt)}</span>;
+    return <span className="rounded-md bg-gold-soft px-2 py-1 text-[12px] font-bold text-gold-ink" title="ReliefWeb could not be reached; these are the last updates we had.">Last updated {timeAgo(feed.fetchedAt)}</span>;
   }
   return (
     <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
-      <span className="size-2 rounded-full bg-teal" aria-hidden="true" /> Live · updated {timeAgo(feed.fetchedAt)}
+      <span className="size-2 rounded-full bg-teal" aria-hidden="true" /> Live from ReliefWeb · updated {timeAgo(feed.fetchedAt)}
     </span>
   );
 }
@@ -125,7 +125,7 @@ function CountryList({ counts, selected, onSelect, following, onFollow }: {
             </li>
           );
         })}
-        {shown.length === 0 && <li className="px-2.5 py-6 text-center text-[13px] text-muted-foreground">No headline names that country.</li>}
+        {shown.length === 0 && <li className="px-2.5 py-6 text-center text-[13px] text-muted-foreground">No update covers that country.</li>}
       </ol>
     </div>
   );
@@ -162,7 +162,13 @@ function Feedlist({ articles, query, lastSeen, onSelect, empty }: {
                     {isNew && <span className="rounded bg-teal/15 px-1.5 py-px text-[11px] font-bold text-teal-deep">New</span>}
                     <time dateTime={a.date}>{new Date(a.date).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</time>
                     <span aria-hidden="true">·</span>
-                    <span className="truncate">{a.domain}</span>
+                    <span className="truncate">{a.source}</span>
+                    {a.kind && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="shrink-0">{a.kind}</span>
+                      </>
+                    )}
                   </div>
                   <a href={a.url} target="_blank" rel="noopener noreferrer" className="group mt-1 block text-[15px] font-bold leading-snug hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">
                     <Highlight text={a.title} query={query} />
@@ -185,7 +191,7 @@ function Feedlist({ articles, query, lastSeen, onSelect, empty }: {
       ))}
       {articles.length > limit && (
         <button type="button" onClick={() => setLimit((n) => n + 40)} className="rounded-lg border py-2 text-[13px] font-bold text-primary hover:bg-primary-soft">
-          Show older headlines ({articles.length - limit} more)
+          Show older updates ({articles.length - limit} more)
         </button>
       )}
     </div>
@@ -194,7 +200,7 @@ function Feedlist({ articles, query, lastSeen, onSelect, empty }: {
 
 export default function Capsule() {
   const params = useSearchParams();
-  const [range, setRange] = useState<Range>('7d');
+  const [kind, setKind] = useState<string>('all');
   const [topic, setTopic] = useState<Topic>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -229,10 +235,10 @@ export default function Capsule() {
   }, []);
 
   const load = useCallback((signal?: AbortSignal) => {
-    return fetch(`/api/gdelt?range=${range}`, { signal }).then((r) =>
+    return fetch('/api/feed', { signal }).then((r) =>
       r.ok ? (r.json() as Promise<Feed>) : Promise.reject(new Error(String(r.status))),
     );
-  }, [range]);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -276,7 +282,11 @@ export default function Capsule() {
     }
   }, [feed, params]);
 
-  const topical = useMemo(() => byTopic(feed?.articles ?? [], topic), [feed, topic]);
+  const kinds = useMemo(() => KINDS.filter((k) => feed?.articles.some((a) => a.kind === k)), [feed]);
+  const topical = useMemo(
+    () => byTopic(feed?.articles ?? [], topic).filter((a) => kind === 'all' || a.kind === kind),
+    [feed, topic, kind],
+  );
   const counts = useMemo(() => {
     const m = new Map<string, number>();
     for (const a of topical) for (const c of a.countries) m.set(c, (m.get(c) ?? 0) + 1);
@@ -295,9 +305,10 @@ export default function Capsule() {
     [topical, selected, followedOnly, following, q],
   );
   const newCount = lastSeen === null ? 0 : shown.filter((a) => new Date(a.date).getTime() > lastSeen).length;
-  const filtered = topic !== 'all' || selected !== null || followedOnly || q !== '';
+  const filtered = topic !== 'all' || kind !== 'all' || selected !== null || followedOnly || q !== '';
   const clear = () => {
     setTopic('all');
+    setKind('all');
     setSelected(null);
     setFollowedOnly(false);
     setQuery('');
@@ -318,17 +329,17 @@ export default function Capsule() {
       <div className="sticky top-header z-20 border-b bg-primary-soft px-4 shadow-[0_1px_2px_rgba(20,40,60,0.05)] lg:px-8">
         <div className="mx-auto flex max-w-[1240px] flex-wrap items-center gap-2 py-2">
           <label className="relative min-w-[14rem] flex-1 sm:max-w-sm">
-            <span className="sr-only">Search headlines</span>
+            <span className="sr-only">Search updates</span>
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search headlines"
+              placeholder="Search updates"
               className="h-9 w-full rounded-lg border border-input bg-white pl-9 pr-3 text-[13px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
             />
           </label>
-          <SelectPill label="Period" value={range} options={RANGES.map((r) => ({ value: r.id, label: `Last ${r.label}` }))} onChange={setRange} />
+          <SelectPill label="Type" value={kind} options={[{ value: 'all', label: 'All types' }, ...kinds.map((k) => ({ value: k, label: k }))]} onChange={setKind} />
           <SelectPill label="Topic" value={topic} options={TOPICS.map((t) => ({ value: t.value, label: t.label }))} onChange={setTopic} />
           {following.length > 0 && (
             <button
@@ -347,7 +358,7 @@ export default function Capsule() {
       </div>
 
       <main className="mx-auto grid max-w-[1240px] gap-6 px-4 py-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:px-8">
-        <div ref={feedRef} className="order-2 min-w-0 scroll-mt-[calc(var(--spacing-header)+64px)] lg:order-1">
+        <div ref={feedRef} className="min-w-0 scroll-mt-[calc(var(--spacing-header)+64px)]">
           {failed && (
             <div role="alert" className="mb-4 rounded-xl border border-[#F1C4C8] bg-[#FDF2F3] px-4 py-3 text-[14px] text-[#A80F1C]">
               Capsule could not reach its news feed.{' '}
@@ -356,14 +367,14 @@ export default function Capsule() {
           )}
           {fresh > 0 && (
             <button type="button" onClick={showWaiting} className="mb-4 w-full rounded-xl border border-teal/40 bg-teal/10 py-2.5 text-[14px] font-bold text-teal-deep hover:bg-teal/15">
-              {fresh} new {fresh === 1 ? 'headline' : 'headlines'} · show
+              {fresh} new {fresh === 1 ? 'update' : 'updates'} · show
             </button>
           )}
           <Panel
-            title={selected ? displayName(selected) : followedOnly ? 'Countries you follow' : 'Latest headlines'}
+            title={selected ? displayName(selected) : followedOnly ? 'Countries you follow' : 'Latest updates'}
             note={
               feed
-                ? `${shown.length.toLocaleString('en-US')} ${shown.length === 1 ? 'headline' : 'headlines'}${newCount ? ` · ${newCount} new since your last visit` : ''}`
+                ? `${shown.length.toLocaleString('en-US')} ${shown.length === 1 ? 'update' : 'updates'}${newCount ? ` · ${newCount} new since your last visit` : ''}`
                 : undefined
             }
             legend={selected ? (
@@ -378,12 +389,12 @@ export default function Capsule() {
           >
             {feed ? (
               <Feedlist
-                key={`${range}-${topic}-${selected}-${followedOnly}`}
+                key={`${kind}-${topic}-${selected}-${followedOnly}`}
                 articles={shown}
                 query={q}
                 lastSeen={lastSeen}
                 onSelect={setSelected}
-                empty={q ? <>No headline mentions &ldquo;{q}&rdquo;.</> : 'No headlines match these filters.'}
+                empty={q ? <>No update mentions &ldquo;{q}&rdquo;.</> : 'No updates match these filters.'}
               />
             ) : (
               <div className="space-y-4">{Array.from({ length: 6 }, (_, i) => <div key={i} className="capsule-skeleton h-14 rounded-lg" />)}</div>
@@ -391,7 +402,7 @@ export default function Capsule() {
           </Panel>
         </div>
 
-        <aside className="order-1 flex min-w-0 flex-col gap-4 lg:sticky lg:top-[calc(var(--spacing-header)+69px)] lg:order-2 lg:h-[calc(100dvh-var(--spacing-header)-93px)]" aria-label="Filter by country">
+        <aside className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-[calc(var(--spacing-header)+69px)] lg:h-[calc(100dvh-var(--spacing-header)-93px)]" aria-label="Filter by country">
           <Panel label="Map" legend={<><span>Fewer</span>{STEPS.map((c) => <span key={c} className="inline-block h-2 w-3.5 rounded-sm" style={{ background: c }} />)}<span>More</span><Swatch color={NONE} label="None" /></>} className="shrink-0 !gap-3 !p-4">
             <div className="h-[190px]">
               <CapsuleMap counts={countMap} selected={selected} onSelect={setSelected} />

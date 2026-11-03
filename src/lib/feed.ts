@@ -100,8 +100,62 @@ async function search(term: string): Promise<Article[]> {
   return parse(xml);
 }
 
-/** Runs every search one after the other; succeeds when at least one answers. */
+/**
+ * ReliefWeb's API, used when Capsule has an approved app name (RELIEFWEB_APPNAME, requested at
+ * https://apidoc.reliefweb.int/parameters#appname). It is the sanctioned route for automated access;
+ * ReliefWeb's bot protection may refuse the RSS feeds to a server.
+ */
+const API = "https://api.reliefweb.int/v2/reports";
+
+interface ApiReport {
+  fields: {
+    title?: string;
+    url_alias?: string;
+    url?: string;
+    date?: { created?: string };
+    source?: { name?: string; shortname?: string }[];
+    country?: { name?: string }[];
+    format?: { name?: string }[];
+  };
+}
+
+async function fetchFromApi(appname: string): Promise<Feed> {
+  const res = await fetch(`${API}?appname=${encodeURIComponent(appname)}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+    signal: AbortSignal.timeout(25_000),
+    body: JSON.stringify({
+      query: { value: SEARCHES.map((s) => `"${s}"`).join(" OR ") },
+      fields: { include: ["title", "url", "url_alias", "date.created", "source.name", "source.shortname", "country.name", "format.name"] },
+      sort: ["date.created:desc"],
+      limit: 200,
+    }),
+  });
+  if (!res.ok) throw new Error(`ReliefWeb API ${res.status}`);
+  const data = (await res.json()) as { data?: ApiReport[] };
+  const articles: Article[] = (data.data ?? []).flatMap(({ fields: f }) => {
+    const url = f.url_alias || f.url;
+    if (!f.title || !url) return [];
+    const countries = (f.country ?? []).map((c) => c.name ?? "").join(", ");
+    return [{
+      title: f.title,
+      url,
+      source: f.source?.[0]?.name ?? "ReliefWeb",
+      date: f.date?.created ?? new Date().toISOString(),
+      image: null,
+      kind: f.format?.[0]?.name ?? null,
+      countries: countriesOf(countries, f.title),
+    }];
+  });
+  return build(articles, true);
+}
+
+/** The API when Capsule has an app name; otherwise the RSS searches, one after the other. */
 async function fetchFeed(): Promise<Feed> {
+  const appname = process.env.RELIEFWEB_APPNAME;
+  if (appname) return fetchFromApi(appname);
+
   const all: Article[] = [];
   let answered = 0;
   for (const [i, term] of SEARCHES.entries()) {

@@ -145,7 +145,7 @@ export default function CapsuleMap({ counts, selected, onSelect }: {
   const count = hovered ? counts.get(hovered) ?? 0 : 0;
 
   return (
-    <div ref={boxRef} className="relative h-full min-h-[300px] w-full overflow-hidden rounded-lg">
+    <div ref={boxRef} className="relative h-full w-full overflow-hidden rounded-lg">
       <svg ref={svgRef} width={size.w} height={size.h} role="img" aria-label="Map of countries named in headlines" className="block touch-none select-none" onClick={() => onSelect(null)}>
         {geo && (
           <g transform={t.toString()}>

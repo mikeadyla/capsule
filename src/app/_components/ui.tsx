@@ -30,36 +30,6 @@ export function Panel({ id, title, label, note, legend, children, className = ''
   );
 }
 
-/** A small trend line. */
-export function Spark({ values, className = 'h-8 w-24' }: { values: number[]; className?: string }) {
-  if (values.length < 2) return null;
-  const max = Math.max(1, ...values);
-  const pts = values.map((v, i) => [(i / (values.length - 1)) * 96 + 2, 30 - (v / max) * 26] as const);
-  const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
-  const [lx, ly] = pts[pts.length - 1];
-  return (
-    <svg viewBox="0 0 100 32" className={className} aria-hidden="true" preserveAspectRatio="none">
-      <path d={`${d} L98,32 L2,32 Z`} fill="var(--color-primary-soft)" />
-      <path d={d} fill="none" stroke="var(--color-primary)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-      <circle cx={lx} cy={ly} r={2.2} fill="var(--color-primary)" />
-    </svg>
-  );
-}
-
-/** A headline figure, as in the portal's year-at-a-glance cards. */
-export function Figure({ label, value, note, trend }: { label: string; value: ReactNode; note?: ReactNode; trend?: number[] }) {
-  return (
-    <div className="flex min-w-0 flex-col rounded-xl border bg-card p-4 shadow-[0_1px_2px_rgba(20,40,60,0.04)]">
-      <div className="text-[13px] text-muted-foreground">{label}</div>
-      <div className="mt-1 flex items-end justify-between gap-3">
-        <div className="min-w-0 truncate text-[26px] font-extrabold leading-none tracking-[-0.01em]">{value}</div>
-        {trend && <Spark values={trend} />}
-      </div>
-      {note && <div className="mt-2 truncate text-[12px] text-muted-foreground">{note}</div>}
-    </div>
-  );
-}
-
 /** A filter as a pill holding a native select, as in the portal's filter bar. */
 export function SelectPill<T extends string>({ label, value, options, onChange }: {
   label: string;

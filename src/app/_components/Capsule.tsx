@@ -1,14 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
-import { ArrowUpRight, Search } from 'lucide-react';
+import { ArrowUpRight, Search, Star, X } from 'lucide-react';
 import { displayName } from '@/lib/gazetteer';
 import { timeAgo } from '@/lib/format';
-import { buckets, byTopic, TOPICS, type Topic } from '@/lib/topics';
+import { byTopic, TOPICS, type Topic } from '@/lib/topics';
 import { RANGES, type Article, type Feed, type Range } from '@/lib/types';
-import { Figure, Panel, SelectPill, Swatch } from './ui';
+import { Panel, SelectPill, Swatch } from './ui';
 import { NONE, STEPS } from './CapsuleMap';
 
 const CapsuleMap = dynamic(() => import('./CapsuleMap'), {
@@ -16,7 +16,26 @@ const CapsuleMap = dynamic(() => import('./CapsuleMap'), {
   loading: () => <div className="capsule-skeleton h-full w-full rounded-lg" />,
 });
 
-const PERIOD: Record<Range, string> = { '24h': 'in the last 24 hours', '7d': 'in the last 7 days', '30d': 'in the last 30 days' };
+/** How often an open page looks for new headlines. */
+const POLL_MS = 5 * 60 * 1000;
+const FOLLOWING_KEY = 'capsule.following';
+const LAST_SEEN_KEY = 'capsule.lastSeen';
+
+function readStore<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeStore(key: string, value: unknown) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // storage blocked: following and "new" markers last for this visit only
+  }
+}
 
 function Status({ feed, loading }: { feed: Feed | null; loading: boolean }) {
   if (!feed) return <span className="text-[13px] text-muted-foreground">{loading ? 'Loading the news feed…' : ''}</span>;
@@ -33,11 +52,39 @@ function Status({ feed, loading }: { feed: Feed | null; loading: boolean }) {
   );
 }
 
-function CountryList({ counts, selected, onSelect }: { counts: [string, number][]; selected: string | null; onSelect: (n: string | null) => void }) {
+/** Today, Yesterday, then "Monday 2 November". */
+function dayLabel(iso: string, now = new Date()) {
+  const d = new Date(iso);
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86_400_000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
+function Highlight({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const i = text.toLowerCase().indexOf(query.toLowerCase());
+  if (i < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark className="rounded-sm bg-gold-soft px-0.5 text-foreground">{text.slice(i, i + query.length)}</mark>
+      {text.slice(i + query.length)}
+    </>
+  );
+}
+
+function CountryList({ counts, selected, onSelect, following, onFollow }: {
+  counts: [string, number][];
+  selected: string | null;
+  onSelect: (n: string | null) => void;
+  following: string[];
+  onFollow: (n: string) => void;
+}) {
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const shown = q ? counts.filter(([name]) => displayName(name).toLowerCase().includes(q)) : counts;
-  const max = counts[0]?.[1] ?? 1;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <label className="relative block">
@@ -50,22 +97,30 @@ function CountryList({ counts, selected, onSelect }: { counts: [string, number][
           className="h-9 w-full rounded-lg border border-input bg-white pl-9 pr-3 text-[13px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
         />
       </label>
-      <ol className="mt-3 min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1" aria-label="Countries named in headlines">
+      <ol className="mt-2 min-h-0 flex-1 overflow-y-auto" aria-label="Countries in the news">
         {shown.map(([name, n]) => {
           const on = name === selected;
+          const followed = following.includes(name);
           return (
-            <li key={name}>
+            <li key={name} className={`flex items-center rounded-md ${on ? 'bg-primary-soft' : 'hover:bg-muted'}`}>
               <button
                 type="button"
                 aria-pressed={on}
                 onClick={() => onSelect(on ? null : name)}
-                className={`grid w-full grid-cols-[1fr_auto] items-center gap-x-3 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-ring ${on ? 'bg-primary-soft font-bold text-primary' : 'hover:bg-muted'}`}
+                className={`flex min-w-0 flex-1 items-center justify-between gap-3 px-2.5 py-1.5 text-left text-[13px] focus-visible:outline-2 focus-visible:outline-ring ${on ? 'font-bold text-primary' : ''}`}
               >
                 <span className="truncate">{displayName(name)}</span>
-                <span className="font-bold tabular-nums">{n}</span>
-                <span className="col-span-2 mt-1 h-1 rounded-full bg-muted">
-                  <span className="block h-1 rounded-full bg-primary/70" style={{ width: `${(n / max) * 100}%` }} />
-                </span>
+                <span className="tabular-nums text-muted-foreground">{n}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onFollow(name)}
+                aria-pressed={followed}
+                aria-label={followed ? `Stop following ${displayName(name)}` : `Follow ${displayName(name)}`}
+                title={followed ? 'Following' : 'Follow'}
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-primary focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                <Star className="size-4" fill={followed ? 'currentColor' : 'none'} style={followed ? { color: 'var(--color-primary)' } : undefined} />
               </button>
             </li>
           );
@@ -76,85 +131,64 @@ function CountryList({ counts, selected, onSelect }: { counts: [string, number][
   );
 }
 
-function Coverage({ articles, range }: { articles: Article[]; range: Range }) {
-  const rows = buckets(articles, range);
-  const max = Math.max(1, ...rows.map((r) => r.count));
-  const every = rows.length > 12 ? Math.ceil(rows.length / 6) : rows.length > 8 ? 2 : 1;
-  return (
-    <div>
-      <div className="flex h-40 items-end gap-[3px]" role="img" aria-label="Headlines over time">
-        {rows.map((r) => (
-          <div key={r.start} className="group relative flex h-full flex-1 items-end" title={`${r.label}: ${r.count}`}>
-            <div className="w-full rounded-t-[3px] bg-primary/80 transition-colors group-hover:bg-primary" style={{ height: `${(r.count / max) * 100}%`, minHeight: r.count ? 2 : 0 }} />
-          </div>
-        ))}
-      </div>
-      <div className="mt-1.5 flex gap-[3px] text-[11px] text-muted-foreground">
-        {rows.map((r, i) => (
-          <div key={r.start} className="flex-1 truncate text-center">{i % every === 0 ? r.label : ''}</div>
-        ))}
-      </div>
-    </div>
-  );
-}
+function Feedlist({ articles, query, lastSeen, onSelect, empty }: {
+  articles: Article[];
+  query: string;
+  lastSeen: number | null;
+  onSelect: (n: string) => void;
+  empty: ReactNode;
+}) {
+  const [limit, setLimit] = useState(40);
+  if (!articles.length) return <div className="py-14 text-center text-[14px] text-muted-foreground">{empty}</div>;
 
-function Ranking({ counts, selected, onSelect }: { counts: [string, number][]; selected: string | null; onSelect: (n: string | null) => void }) {
-  const top = counts.slice(0, 10);
-  const max = top[0]?.[1] ?? 1;
-  if (!top.length) return <p className="py-8 text-center text-[13px] text-muted-foreground">No country named yet.</p>;
-  return (
-    <ol className="space-y-2">
-      {top.map(([name, n], i) => {
-        const on = name === selected;
-        return (
-          <li key={name}>
-            <button type="button" onClick={() => onSelect(on ? null : name)} className="grid w-full grid-cols-[1.25rem_8.5rem_1fr_2rem] items-center gap-2 text-left text-[13px] focus-visible:outline-2 focus-visible:outline-ring">
-              <span className="text-right tabular-nums text-muted-foreground">{i + 1}</span>
-              <span className={`truncate ${on ? 'font-bold text-primary' : ''}`}>{displayName(name)}</span>
-              <span className="h-4 rounded-[3px] bg-muted">
-                <span className={`block h-4 rounded-[3px] ${on ? 'bg-primary' : 'bg-primary/60'}`} style={{ width: `${(n / max) * 100}%` }} />
-              </span>
-              <span className="text-right font-bold tabular-nums">{n}</span>
-            </button>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
+  const groups: { label: string; items: Article[] }[] = [];
+  for (const a of articles.slice(0, limit)) {
+    const label = dayLabel(a.date);
+    if (groups.at(-1)?.label !== label) groups.push({ label, items: [] });
+    groups.at(-1)!.items.push(a);
+  }
 
-function Headlines({ articles, onSelect }: { articles: Article[]; onSelect: (n: string) => void }) {
-  const [limit, setLimit] = useState(15);
-  if (!articles.length) return <p className="py-10 text-center text-[13px] text-muted-foreground">No headlines match these filters.</p>;
   return (
-    <>
-      <ul className="divide-y">
-        {articles.slice(0, limit).map((a) => (
-          <li key={a.url} className="grid gap-x-4 gap-y-1 py-3 sm:grid-cols-[5.5rem_1fr]">
-            <time dateTime={a.date} className="text-[12px] tabular-nums text-muted-foreground sm:pt-0.5">{timeAgo(a.date)}</time>
-            <div className="min-w-0">
-              <a href={a.url} target="_blank" rel="noopener noreferrer" className="group inline font-bold leading-snug hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">
-                {a.title}
-                <ArrowUpRight className="ml-1 inline size-3.5 text-muted-foreground group-hover:text-primary" aria-hidden="true" />
-              </a>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[12px] text-muted-foreground">
-                <span>{a.domain}</span>
-                {a.countries.slice(0, 4).map((c) => (
-                  <button key={c} type="button" onClick={() => onSelect(c)} className="rounded px-1 font-semibold text-primary hover:bg-primary-soft">
-                    {displayName(c)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
+    <div className="flex flex-col gap-6">
+      {groups.map((g) => (
+        <section key={g.label} aria-label={g.label}>
+          <h3 className="sticky top-[calc(var(--spacing-header)+53px)] z-10 -mx-1 bg-card/95 px-1 py-1.5 text-[12px] font-bold uppercase tracking-[0.12em] text-muted-foreground backdrop-blur">{g.label}</h3>
+          <ul className="divide-y">
+            {g.items.map((a) => {
+              const isNew = lastSeen !== null && new Date(a.date).getTime() > lastSeen;
+              return (
+                <li key={a.url} className="py-3">
+                  <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+                    {isNew && <span className="rounded bg-teal/15 px-1.5 py-px text-[11px] font-bold text-teal-deep">New</span>}
+                    <time dateTime={a.date}>{new Date(a.date).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</time>
+                    <span aria-hidden="true">·</span>
+                    <span className="truncate">{a.domain}</span>
+                  </div>
+                  <a href={a.url} target="_blank" rel="noopener noreferrer" className="group mt-1 block text-[15px] font-bold leading-snug hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">
+                    <Highlight text={a.title} query={query} />
+                    <ArrowUpRight className="ml-1 inline size-3.5 text-muted-foreground group-hover:text-primary" aria-hidden="true" />
+                  </a>
+                  {a.countries.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {a.countries.slice(0, 4).map((c) => (
+                        <button key={c} type="button" onClick={() => onSelect(c)} className="rounded-md bg-muted px-2 py-0.5 text-[12px] font-semibold text-muted-foreground hover:bg-primary-soft hover:text-primary">
+                          {displayName(c)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
       {articles.length > limit && (
-        <button type="button" onClick={() => setLimit((n) => n + 20)} className="mt-3 w-full rounded-lg border py-2 text-[13px] font-bold text-primary hover:bg-primary-soft">
-          Show more ({articles.length - limit} left)
+        <button type="button" onClick={() => setLimit((n) => n + 40)} className="rounded-lg border py-2 text-[13px] font-bold text-primary hover:bg-primary-soft">
+          Show older headlines ({articles.length - limit} more)
         </button>
       )}
-    </>
+    </div>
   );
 }
 
@@ -163,19 +197,49 @@ export default function Capsule() {
   const [range, setRange] = useState<Range>('7d');
   const [topic, setTopic] = useState<Topic>('all');
   const [selected, setSelected] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [followedOnly, setFollowedOnly] = useState(false);
+  const [following, setFollowing] = useState<string[]>([]);
+  const [lastSeen, setLastSeen] = useState<number | null>(null);
   const [feed, setFeed] = useState<Feed | null>(null);
+  const [waiting, setWaiting] = useState<Feed | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [reload, setReload] = useState(0);
-  const headlinesRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
   const jumped = useRef(false);
+
+  // What you follow, and when you last looked (the headlines since then are marked new).
+  useEffect(() => {
+    setFollowing(readStore<string[]>(FOLLOWING_KEY, []));
+    setLastSeen(readStore<number | null>(LAST_SEEN_KEY, null));
+    const mark = () => writeStore(LAST_SEEN_KEY, Date.now());
+    window.addEventListener('pagehide', mark);
+    return () => {
+      mark();
+      window.removeEventListener('pagehide', mark);
+    };
+  }, []);
+  const toggleFollow = useCallback((name: string) => {
+    setFollowing((list) => {
+      const next = list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
+      writeStore(FOLLOWING_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const load = useCallback((signal?: AbortSignal) => {
+    return fetch(`/api/gdelt?range=${range}`, { signal }).then((r) =>
+      r.ok ? (r.json() as Promise<Feed>) : Promise.reject(new Error(String(r.status))),
+    );
+  }, [range]);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setFailed(false);
-    fetch(`/api/gdelt?range=${range}`, { signal: controller.signal })
-      .then((r) => (r.ok ? (r.json() as Promise<Feed>) : Promise.reject(new Error(String(r.status)))))
+    setWaiting(null);
+    load(controller.signal)
       .then((data) => {
         setFeed(data);
         setLoading(false);
@@ -186,13 +250,29 @@ export default function Capsule() {
         setLoading(false);
       });
     return () => controller.abort();
-  }, [range, reload]);
+  }, [load, reload]);
 
-  // Opened from the Flordanis OS sidebar as "Headlines": go straight to the list.
+  // Look for new headlines every few minutes; offer them rather than moving the list under the reader.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      load()
+        .then((data) => setWaiting(data))
+        .catch(() => undefined);
+    }, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [load]);
+  const known = useMemo(() => new Set(feed?.articles.map((a) => a.url)), [feed]);
+  const fresh = waiting ? waiting.articles.filter((a) => !known.has(a.url)).length : 0;
+  const showWaiting = () => {
+    if (waiting) setFeed(waiting);
+    setWaiting(null);
+  };
+
+  // Opened from the Flordanis OS sidebar as "Headlines": start at the list.
   useEffect(() => {
     if (feed && !jumped.current && params.get('panel') === 'headlines') {
       jumped.current = true;
-      headlinesRef.current?.scrollIntoView({ block: 'start' });
+      feedRef.current?.scrollIntoView({ block: 'start' });
     }
   }, [feed, params]);
 
@@ -203,20 +283,25 @@ export default function Capsule() {
     return [...m].sort((a, b) => b[1] - a[1]);
   }, [topical]);
   const countMap = useMemo(() => new Map(counts), [counts]);
-  const shown = useMemo(() => (selected ? topical.filter((a) => a.countries.includes(selected)) : topical), [topical, selected]);
-
-  const trend = buckets(shown, range).map((b) => b.count);
-  const named = new Set(shown.flatMap((a) => a.countries));
-  // With a country chosen: the country most often named in the same headlines.
-  const companion = useMemo(() => {
-    if (!selected) return null;
-    const m = new Map<string, number>();
-    for (const a of shown) for (const c of a.countries) if (c !== selected) m.set(c, (m.get(c) ?? 0) + 1);
-    return [...m].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-  }, [shown, selected]);
-  const publishers = new Set(shown.map((a) => a.domain)).size;
-  const filtered = topic !== 'all' || selected !== null;
-  const where = selected ? displayName(selected) : 'all countries';
+  const q = query.trim();
+  const shown = useMemo(
+    () =>
+      topical.filter(
+        (a) =>
+          (!selected || a.countries.includes(selected)) &&
+          (!followedOnly || a.countries.some((c) => following.includes(c))) &&
+          (!q || a.title.toLowerCase().includes(q.toLowerCase())),
+      ),
+    [topical, selected, followedOnly, following, q],
+  );
+  const newCount = lastSeen === null ? 0 : shown.filter((a) => new Date(a.date).getTime() > lastSeen).length;
+  const filtered = topic !== 'all' || selected !== null || followedOnly || q !== '';
+  const clear = () => {
+    setTopic('all');
+    setSelected(null);
+    setFollowedOnly(false);
+    setQuery('');
+  };
 
   return (
     <div className="min-h-dvh">
@@ -232,74 +317,90 @@ export default function Capsule() {
 
       <div className="sticky top-header z-20 border-b bg-primary-soft px-4 shadow-[0_1px_2px_rgba(20,40,60,0.05)] lg:px-8">
         <div className="mx-auto flex max-w-[1240px] flex-wrap items-center gap-2 py-2">
+          <label className="relative min-w-[14rem] flex-1 sm:max-w-sm">
+            <span className="sr-only">Search headlines</span>
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search headlines"
+              className="h-9 w-full rounded-lg border border-input bg-white pl-9 pr-3 text-[13px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+            />
+          </label>
           <SelectPill label="Period" value={range} options={RANGES.map((r) => ({ value: r.id, label: `Last ${r.label}` }))} onChange={setRange} />
-          <SelectPill
-            label="Country"
-            value={selected ?? ''}
-            options={[{ value: '', label: 'All countries' }, ...counts.map(([name, n]) => ({ value: name, label: `${displayName(name)} (${n})` }))]}
-            onChange={(v) => setSelected(v || null)}
-          />
           <SelectPill label="Topic" value={topic} options={TOPICS.map((t) => ({ value: t.value, label: t.label }))} onChange={setTopic} />
-          {filtered && (
-            <button type="button" onClick={() => { setTopic('all'); setSelected(null); }} className="ml-auto text-[13px] font-bold text-primary hover:underline">
-              Clear filters
+          {following.length > 0 && (
+            <button
+              type="button"
+              aria-pressed={followedOnly}
+              onClick={() => setFollowedOnly((v) => !v)}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-bold ${followedOnly ? 'border-primary bg-primary text-white' : 'border-input bg-white text-foreground hover:border-primary/40'}`}
+            >
+              <Star className="size-4" fill={followedOnly ? 'currentColor' : 'none'} /> Following ({following.length})
             </button>
+          )}
+          {filtered && (
+            <button type="button" onClick={clear} className="ml-auto text-[13px] font-bold text-primary hover:underline">Clear filters</button>
           )}
         </div>
       </div>
 
-      <main className="mx-auto flex max-w-[1240px] flex-col gap-6 px-4 py-6 lg:px-8 lg:py-8">
-        {failed && (
-          <div role="alert" className="rounded-xl border border-[#F1C4C8] bg-[#FDF2F3] px-4 py-3 text-[14px] text-[#A80F1C]">
-            Capsule could not reach its news feed.{' '}
-            <button type="button" onClick={() => setReload((n) => n + 1)} className="font-bold underline">Try again</button>
-          </div>
-        )}
-
-        <section aria-label="At a glance" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Figure label="Headlines" value={feed ? shown.length.toLocaleString('en-US') : '–'} note={`${where}, ${PERIOD[range]}`} trend={trend} />
-          <Figure label={selected ? 'Other countries named' : 'Countries named'} value={feed ? Math.max(0, named.size - (selected ? 1 : 0)) : '–'} note={selected ? 'in the same headlines' : 'at least once'} />
-          <Figure
-            label={selected ? 'Most often named with it' : 'Most named'}
-            value={feed ? (selected ? (companion ? displayName(companion) : '–') : counts[0] ? displayName(counts[0][0]) : '–') : '–'}
-            note={!selected && counts[0] ? `${counts[0][1]} headlines` : undefined}
-          />
-          <Figure label="Publishers" value={feed ? publishers : '–'} note="different websites" />
-        </section>
-
-        <Panel
-          label="Map of countries named in headlines"
-          legend={<><span>Fewer</span>{STEPS.map((c) => <span key={c} className="inline-block h-2.5 w-5 rounded-sm" style={{ background: c }} />)}<span>More</span><Swatch color={NONE} label="Not named" /></>}
-        >
-          <div className="grid gap-5 lg:h-[440px] lg:grid-cols-[280px_1fr]">
-            <div className="order-2 h-[300px] min-h-0 lg:order-1 lg:h-auto">
-              <CountryList counts={counts} selected={selected} onSelect={setSelected} />
+      <main className="mx-auto grid max-w-[1240px] gap-6 px-4 py-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:px-8">
+        <div ref={feedRef} className="order-2 min-w-0 scroll-mt-[calc(var(--spacing-header)+64px)] lg:order-1">
+          {failed && (
+            <div role="alert" className="mb-4 rounded-xl border border-[#F1C4C8] bg-[#FDF2F3] px-4 py-3 text-[14px] text-[#A80F1C]">
+              Capsule could not reach its news feed.{' '}
+              <button type="button" onClick={() => setReload((n) => n + 1)} className="font-bold underline">Try again</button>
             </div>
-            <div className="order-1 h-[280px] min-h-0 sm:h-[360px] lg:order-2 lg:h-auto">
-              <CapsuleMap counts={countMap} selected={selected} onSelect={setSelected} />
-            </div>
-          </div>
-        </Panel>
-
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Panel title="Headlines over time" note={`${range === '24h' ? 'Per hour' : 'Per day'}, ${where}.`}>
-            {feed ? <Coverage articles={shown} range={range} /> : <div className="capsule-skeleton h-44 rounded-lg" />}
-          </Panel>
-          <Panel title="Most named countries" note={topic === 'all' ? 'Headlines naming each country.' : `Headlines about ${TOPICS.find((t) => t.value === topic)?.label.toLowerCase()} naming each country.`}>
-            {feed ? <Ranking counts={counts} selected={selected} onSelect={setSelected} /> : <div className="capsule-skeleton h-44 rounded-lg" />}
-          </Panel>
-        </div>
-
-        <div ref={headlinesRef} className="scroll-mt-[calc(var(--spacing-header)+64px)]">
-          <Panel id="headlines" title="Headlines" note={`${shown.length.toLocaleString('en-US')} ${shown.length === 1 ? 'headline' : 'headlines'}, newest first.`}>
+          )}
+          {fresh > 0 && (
+            <button type="button" onClick={showWaiting} className="mb-4 w-full rounded-xl border border-teal/40 bg-teal/10 py-2.5 text-[14px] font-bold text-teal-deep hover:bg-teal/15">
+              {fresh} new {fresh === 1 ? 'headline' : 'headlines'} · show
+            </button>
+          )}
+          <Panel
+            title={selected ? displayName(selected) : followedOnly ? 'Countries you follow' : 'Latest headlines'}
+            note={
+              feed
+                ? `${shown.length.toLocaleString('en-US')} ${shown.length === 1 ? 'headline' : 'headlines'}${newCount ? ` · ${newCount} new since your last visit` : ''}`
+                : undefined
+            }
+            legend={selected ? (
+              <span className="inline-flex items-center gap-2">
+                <button type="button" onClick={() => toggleFollow(selected)} className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[12px] font-bold text-foreground hover:border-primary/40">
+                  <Star className="size-3.5" fill={following.includes(selected) ? 'currentColor' : 'none'} style={following.includes(selected) ? { color: 'var(--color-primary)' } : undefined} />
+                  {following.includes(selected) ? 'Following' : 'Follow'}
+                </button>
+                <button type="button" onClick={() => setSelected(null)} aria-label="Show all countries" className="flex size-7 items-center justify-center rounded-md hover:bg-muted"><X className="size-4" /></button>
+              </span>
+            ) : undefined}
+          >
             {feed ? (
-              <Headlines key={`${range}-${topic}-${selected}`} articles={shown} onSelect={setSelected} />
+              <Feedlist
+                key={`${range}-${topic}-${selected}-${followedOnly}`}
+                articles={shown}
+                query={q}
+                lastSeen={lastSeen}
+                onSelect={setSelected}
+                empty={q ? <>No headline mentions &ldquo;{q}&rdquo;.</> : 'No headlines match these filters.'}
+              />
             ) : (
-              <div className="space-y-3">{Array.from({ length: 5 }, (_, i) => <div key={i} className="capsule-skeleton h-10 rounded-lg" />)}</div>
+              <div className="space-y-4">{Array.from({ length: 6 }, (_, i) => <div key={i} className="capsule-skeleton h-14 rounded-lg" />)}</div>
             )}
           </Panel>
         </div>
 
+        <aside className="order-1 flex min-w-0 flex-col gap-4 lg:sticky lg:top-[calc(var(--spacing-header)+69px)] lg:order-2 lg:h-[calc(100dvh-var(--spacing-header)-93px)]" aria-label="Filter by country">
+          <Panel label="Map" legend={<><span>Fewer</span>{STEPS.map((c) => <span key={c} className="inline-block h-2 w-3.5 rounded-sm" style={{ background: c }} />)}<span>More</span><Swatch color={NONE} label="None" /></>} className="shrink-0 !gap-3 !p-4">
+            <div className="h-[190px]">
+              <CapsuleMap counts={countMap} selected={selected} onSelect={setSelected} />
+            </div>
+          </Panel>
+          <Panel title="Countries in the news" note="Star a country to follow it." className="min-h-[320px] flex-1 !p-4">
+            <CountryList counts={counts} selected={selected} onSelect={setSelected} following={following} onFollow={toggleFollow} />
+          </Panel>
+        </aside>
       </main>
     </div>
   );

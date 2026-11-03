@@ -268,8 +268,7 @@ export default function Capsule() {
         </section>
 
         <Panel
-          title="Where the headlines point"
-          note={`Countries named in English-language headlines about refugees, asylum and displacement, ${PERIOD[range]}. Click one to filter.`}
+          label="Map of countries named in headlines"
           legend={<><span>Fewer</span>{STEPS.map((c) => <span key={c} className="inline-block h-2.5 w-5 rounded-sm" style={{ background: c }} />)}<span>More</span><Swatch color={NONE} label="Not named" /></>}
         >
           <div className="grid gap-5 lg:h-[440px] lg:grid-cols-[280px_1fr]">

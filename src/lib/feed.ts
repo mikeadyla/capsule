@@ -25,7 +25,9 @@ const TTL_MS = 15 * 60 * 1000;
 /** After a failure, GDELT is left alone for this long. */
 const RETRY_AFTER_MS = 60 * 1000;
 /** GDELT asks for one request every five seconds. */
-const MIN_GAP_MS = 5200;
+const MIN_GAP_MS = 6500;
+/** Waits before asking again after a 429. */
+const BACKOFF_MS = [12_000, 30_000];
 
 interface Store {
   cache: Map<Range, { at: number; feed: Feed }>;
@@ -111,7 +113,12 @@ async function ask(query: string, range: Range): Promise<GdeltArticle[]> {
     timespan: TIMESPAN[range],
     sort: "DateDesc",
   });
-  const res = await spaced(() => fetch(`${GDELT_DOC_API}?${params}`, { cache: "no-store", signal: AbortSignal.timeout(25_000) }));
+  let res = await spaced(() => fetch(`${GDELT_DOC_API}?${params}`, { cache: "no-store", signal: AbortSignal.timeout(25_000) }));
+  for (const wait of BACKOFF_MS) {
+    if (res.status !== 429) break;
+    await sleep(wait);
+    res = await spaced(() => fetch(`${GDELT_DOC_API}?${params}`, { cache: "no-store", signal: AbortSignal.timeout(25_000) }));
+  }
   if (!res.ok) throw new Error(`GDELT ${res.status}`);
   const data = JSON.parse(await res.text()) as { articles?: GdeltArticle[] }; // throws on its plain-text errors
   return data.articles ?? [];

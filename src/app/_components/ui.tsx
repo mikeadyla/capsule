@@ -2,23 +2,29 @@ import type { ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 /** A titled white panel, as in the Refugee Data Portal. */
-export function Panel({ id, title, note, legend, children, className = '' }: {
+export function Panel({ id, title, label, note, legend, children, className = '' }: {
   id?: string;
-  title: string;
+  title?: string;
+  /** Accessible name when the panel shows no title. */
+  label?: string;
   note?: ReactNode;
   legend?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
   return (
-    <section id={id} aria-label={title} className={`flex min-w-0 flex-col gap-4 rounded-xl border bg-card p-5 shadow-[0_1px_2px_rgba(20,40,60,0.04)] sm:p-6 ${className}`}>
-      <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-        <div className="min-w-0">
-          <h2 className="text-[16px] font-bold leading-tight">{title}</h2>
-          {note && <p className="mt-1 text-[13px] text-muted-foreground">{note}</p>}
-        </div>
-        {legend && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">{legend}</div>}
-      </header>
+    <section id={id} aria-label={title ?? label} className={`flex min-w-0 flex-col gap-4 rounded-xl border bg-card p-5 shadow-[0_1px_2px_rgba(20,40,60,0.04)] sm:p-6 ${className}`}>
+      {(title || note || legend) && (
+        <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          {(title || note) && (
+            <div className="min-w-0">
+              {title && <h2 className="text-[16px] font-bold leading-tight">{title}</h2>}
+              {note && <p className="mt-1 text-[13px] text-muted-foreground">{note}</p>}
+            </div>
+          )}
+          {legend && <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">{legend}</div>}
+        </header>
+      )}
       <div className="min-h-0 flex-1">{children}</div>
     </section>
   );
